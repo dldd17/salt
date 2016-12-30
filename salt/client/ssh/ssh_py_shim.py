@@ -223,7 +223,7 @@ def main(argv):  # pylint: disable=W0613
         old_umask = os.umask(OPTIONS.cmd_umask)
     if OPTIONS.tty:
         stdout, _ = subprocess.Popen(salt_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-        sys.stdout.write(stdout)
+        sys.stdout.write(stdout.decode())
         sys.stdout.flush()
         if OPTIONS.wipe:
             shutil.rmtree(OPTIONS.saltdir)
