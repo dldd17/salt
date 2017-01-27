@@ -566,6 +566,8 @@ class Terminal(object):
             try:
                 if self.stdin_logger:
                     self.stdin_logger.log(self.stdin_logger_level, data)
+                if isinstance(data, str):
+                    data = salt.utils.to_bytes(data)
                 written = os.write(self.child_fd, data)
             except OSError as why:
                 if why.errno == errno.EPIPE:  # broken pipe
