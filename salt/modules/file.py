@@ -3280,7 +3280,9 @@ def stats(path, hash_type=None, follow_symlinks=True):
     ret['mtime'] = pstat.st_mtime
     ret['ctime'] = pstat.st_ctime
     ret['size'] = pstat.st_size
-    ret['mode'] = str(oct(stat.S_IMODE(pstat.st_mode)))
+    # PY2/PY3
+    # http://stackoverflow.com/questions/18806772/most-pythonic-way-to-convert-a-string-to-a-octal-number
+    ret['mode'] = format(stat.S_IMODE(pstat.st_mode), 'o')
     if hash_type:
         ret['sum'] = get_hash(path, hash_type)
     ret['type'] = 'file'
