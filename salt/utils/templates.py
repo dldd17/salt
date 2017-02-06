@@ -344,6 +344,7 @@ def render_jinja_tmpl(tmplstr, context, tmplpath=None):
                                        **env_args)
 
     jinja_env.filters['log'] = salt.utils.jinja.log_filter
+    jinja_env.filters['skip'] = salt.utils.jinja.skip_filter
     jinja_env.filters['strftime'] = salt.utils.date_format
     jinja_env.filters['sequence'] = salt.utils.jinja.ensure_sequence_filter
     jinja_env.filters['yaml_dquote'] = salt.utils.yamlencoding.yaml_dquote
