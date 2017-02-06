@@ -169,6 +169,24 @@ class PrintableDict(OrderedDict):
         return '{' + ', '.join(output) + '}'
 
 
+def log_filter(data, message=""):
+    '''
+    Send data to log stream
+
+    .. code-balock:: yaml
+
+        {% my_string = "foo" %}
+
+        {{ my_string|log("my log message header") }}
+
+    will be rendered as empty string,
+    use -l debug to see data message
+
+    '''
+    log.debug("%s%s" % (message, data))
+    return ''
+
+
 def ensure_sequence_filter(data):
     '''
     Ensure sequenced data.
