@@ -4877,7 +4877,7 @@ def manage_file(name,
             mask = os.umask(0)
             os.umask(mask)
             # Calculate the mode value that results from the umask
-            mode = oct((0o777 ^ mask) & 0o666)
+            mode = format((0o777 ^ mask) & 0o666, 'o')
         ret, _ = check_perms(name, ret, user, group, mode)
 
         if not ret['comment']:

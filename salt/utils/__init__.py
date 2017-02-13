@@ -1874,7 +1874,7 @@ def normalize_mode(mode):
     if mode is None:
         return None
     if not isinstance(mode, six.string_types):
-        mode = str(mode)
+        mode = format(mode, 'o')
     # Strip any quotes any initial zeroes, then though zero-pad it up to 4.
     # This ensures that somethign like '00644' is normalized to '0644'
     return mode.strip('"').strip('\'').lstrip('0').zfill(4)
