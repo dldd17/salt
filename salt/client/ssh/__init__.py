@@ -168,11 +168,11 @@ do
                      PKG_CONFIG_PATH=$PKG_CONFIG_PATH \
                      "$py_cmd_path" -c \
                    'import base64;
-                   exec(base64.b64decode("""{{SSH_PY_CODE}}""").decode("utf-8"))'
+                   exec(base64.b64decode(b"""{{SSH_PY_CODE}}""").decode("utf-8"))'
         else
             exec $SUDO "$py_cmd_path" -c \
                    'import base64;
-                   exec(base64.b64decode("""{{SSH_PY_CODE}}""").decode("utf-8"))'
+                   exec(base64.b64decode(b"""{{SSH_PY_CODE}}""").decode("utf-8"))'
         fi
         exit 0
     else
