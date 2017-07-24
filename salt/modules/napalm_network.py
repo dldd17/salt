@@ -16,6 +16,7 @@ Dependencies
 - :mod:`napalm proxy minion <salt.proxy.napalm>`
 
 .. versionadded:: 2016.11.0
+.. versionchanged:: 2017.7.0
 '''
 
 from __future__ import absolute_import
@@ -26,17 +27,10 @@ log = logging.getLogger(__name__)
 
 # salt libs
 from salt.ext import six
+import salt.utils.files
 import salt.utils.templates
-
-try:
-    # will try to import NAPALM
-    # https://github.com/napalm-automation/napalm
-    # pylint: disable=W0611
-    from napalm_base import get_network_driver
-    # pylint: enable=W0611
-    HAS_NAPALM = True
-except ImportError:
-    HAS_NAPALM = False
+import salt.utils.napalm
+from salt.utils.napalm import proxy_napalm_wrap
 
 # ----------------------------------------------------------------------------------------------------------------------
 # module properties
@@ -52,17 +46,10 @@ __proxyenabled__ = ['napalm']
 
 
 def __virtual__():
-
     '''
-    NAPALM library must be installed for this module to work.
-    Also, the key proxymodule must be set in the __opts___ dictionary.
+    NAPALM library must be installed for this module to work and run in a (proxy) minion.
     '''
-
-    if HAS_NAPALM and 'proxy' in __opts__:
-        return __virtualname__
-    else:
-        return (False, 'The module NET (napalm_network) cannot be loaded: \
-                napalm or proxy could not be loaded.')
+    return salt.utils.napalm.virtual(__opts__, __virtualname__, __file__)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # helper functions -- will not be exported
@@ -110,11 +97,48 @@ def _filter_dict(input_dict, search_key, search_value):
     return output_dict
 
 
-def _config_logic(loaded_result, test=False, commit_config=True, loaded_config=None):
+def _explicit_close(napalm_device):
+    '''
+    Will explicitely close the config session with the network device,
+    when running in a now-always-alive proxy minion or regular minion.
+    This helper must be used in configuration-related functions,
+    as the session is preserved and not closed before making any changes.
+    '''
+    if salt.utils.napalm.not_always_alive(__opts__):
+        # force closing the configuration session
+        # when running in a non-always-alive proxy
+        # or regular minion
+        try:
+            napalm_device['DRIVER'].close()
+        except Exception as err:
+            log.error('Unable to close the temp connection with the device:')
+            log.error(err)
+            log.error('Please report.')
+
+
+def _config_logic(napalm_device,
+                  loaded_result,
+                  test=False,
+                  commit_config=True,
+                  loaded_config=None):
 
     '''
     Builds the config logic for `load_config` and `load_template` functions.
     '''
+
+    # As the Salt logic is built around independent events
+    # when it comes to configuration changes in the
+    # candidate DB on the network devices, we need to
+    # make sure we're using the same session.
+    # Hence, we need to pass the same object around.
+    # the napalm_device object is inherited from
+    # the load_config or load_template functions
+    # and forwarded to compare, discard, commit etc.
+    # then the decorator will make sure that
+    # if not proxy (when the connection is always alive)
+    # and the `inherit_napalm_device` is set,
+    # `napalm_device` will be overriden.
+    # See `salt.utils.napalm.proxy_napalm_wrap` decorator.
 
     loaded_result['already_configured'] = False
 
@@ -122,13 +146,17 @@ def _config_logic(loaded_result, test=False, commit_config=True, loaded_config=N
     if loaded_config:
         loaded_result['loaded_config'] = loaded_config
 
-    _compare = compare_config()
+    _compare = compare_config(inherit_napalm_device=napalm_device)
     if _compare.get('result', False):
         loaded_result['diff'] = _compare.get('out')
         loaded_result.pop('out', '')  # not needed
+    else:
+        loaded_result['diff'] = None
+        loaded_result['result'] = False
+        loaded_result['comment'] = _compare.get('comment')
+        return loaded_result
 
     _loaded_res = loaded_result.get('result', False)
-
     if not _loaded_res or test:
         # if unable to load the config (errors / warnings)
         # or in testing mode,
@@ -137,18 +165,20 @@ def _config_logic(loaded_result, test=False, commit_config=True, loaded_config=N
             loaded_result['comment'] += '\n'
         if not len(loaded_result.get('diff', '')) > 0:
             loaded_result['already_configured'] = True
-        _discarded = discard_config()
+        _discarded = discard_config(inherit_napalm_device=napalm_device)
         if not _discarded.get('result', False):
             loaded_result['comment'] += _discarded['comment'] if _discarded.get('comment') \
                                                               else 'Unable to discard config.'
             loaded_result['result'] = False
             # make sure it notifies
             # that something went wrong
+            _explicit_close(napalm_device)
             return loaded_result
 
         loaded_result['comment'] += 'Configuration discarded.'
         # loaded_result['result'] = False not necessary
         # as the result can be true when test=True
+        _explicit_close(napalm_device)
         return loaded_result
 
     if not test and commit_config:
@@ -157,13 +187,14 @@ def _config_logic(loaded_result, test=False, commit_config=True, loaded_config=N
             # if not testing mode
             # and also the user wants to commit (default)
             # and there are changes to commit
-            _commit = commit()  # calls the function commit, defined below
+            _commit = commit(inherit_napalm_device=napalm_device)  # calls the function commit, defined below
             if not _commit.get('result', False):
                 # if unable to commit
                 loaded_result['comment'] += _commit['comment'] if _commit.get('comment') else 'Unable to commit.'
                 loaded_result['result'] = False
                 # unable to commit, something went wrong
-                _discarded = discard_config()  # try to discard, thus release the config DB
+                _discarded = discard_config(inherit_napalm_device=napalm_device)
+                # try to discard, thus release the config DB
                 if not _discarded.get('result', False):
                     loaded_result['comment'] += '\n'
                     loaded_result['comment'] += _discarded['comment'] if _discarded.get('comment') \
@@ -171,16 +202,17 @@ def _config_logic(loaded_result, test=False, commit_config=True, loaded_config=N
         else:
             # would like to commit, but there's no change
             # need to call discard_config() to release the config DB
-            _discarded = discard_config()
+            _discarded = discard_config(inherit_napalm_device=napalm_device)
             if not _discarded.get('result', False):
                 loaded_result['comment'] += _discarded['comment'] if _discarded.get('comment') \
                                                                   else 'Unable to discard config.'
                 loaded_result['result'] = False
                 # notify if anything goes wrong
+                _explicit_close(napalm_device)
                 return loaded_result
             loaded_result['already_configured'] = True
             loaded_result['comment'] = 'Already configured.'
-
+    _explicit_close(napalm_device)
     return loaded_result
 
 
@@ -189,9 +221,10 @@ def _config_logic(loaded_result, test=False, commit_config=True, loaded_config=N
 # ----------------------------------------------------------------------------------------------------------------------
 
 
-def connected():
+@proxy_napalm_wrap
+def connected(**kwarvs):  # pylint: disable=unused-argument
     '''
-    Specifies if the proxy succeeded to connect to the network device.
+    Specifies if the connection to the device succeeded.
 
     CLI Example:
 
@@ -201,11 +234,12 @@ def connected():
     '''
 
     return {
-        'out': __proxy__['napalm.ping']()
+        'out': napalm_device.get('UP', False)  # pylint: disable=undefined-variable
     }
 
 
-def facts():
+@proxy_napalm_wrap
+def facts(**kwargs):  # pylint: disable=unused-argument
     '''
     Returns characteristics of the network device.
     :return: a dictionary with the following keys:
@@ -251,14 +285,16 @@ def facts():
         }
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'get_facts',
         **{
         }
     )
 
 
-def environment():
+@proxy_napalm_wrap
+def environment(**kwargs):  # pylint: disable=unused-argument
     '''
     Returns the environment of the device.
 
@@ -316,14 +352,16 @@ def environment():
         }
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'get_environment',
         **{
         }
     )
 
 
-def cli(*commands):
+@proxy_napalm_wrap
+def cli(*commands, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Returns a dictionary with the raw output of all commands passed as arguments.
@@ -360,7 +398,8 @@ def cli(*commands):
         }
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'cli',
         **{
             'commands': list(commands)
@@ -370,16 +409,29 @@ def cli(*commands):
     # in case of errors, they'll be catched in the proxy
 
 
-def traceroute(destination, source='', ttl=0, timeout=0):
+@proxy_napalm_wrap
+def traceroute(destination, source=None, ttl=None, timeout=None, vrf=None, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Calls the method traceroute from the NAPALM driver object and returns a dictionary with the result of the traceroute
     command executed on the device.
 
-    :param destination: Hostname or address of remote host
-    :param source: Source address to use in outgoing traceroute packets
-    :param ttl: IP maximum time-to-live value (or IPv6 maximum hop-limit value)
-    :param timeout: Number of seconds to wait for response (seconds)
+    destination
+        Hostname or address of remote host
+
+    source
+        Source address to use in outgoing traceroute packets
+
+    ttl
+        IP maximum time-to-live value (or IPv6 maximum hop-limit value)
+
+    timeout
+        Number of seconds to wait for response (seconds)
+
+    vrf
+        VRF (routing instance) for traceroute attempt
+
+        .. versionadded:: 2016.11.4
 
     CLI Example:
 
@@ -389,28 +441,47 @@ def traceroute(destination, source='', ttl=0, timeout=0):
         salt '*' net.traceroute 8.8.8.8 source=127.0.0.1 ttl=5 timeout=1
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'traceroute',
         **{
             'destination': destination,
             'source': source,
             'ttl': ttl,
-            'timeout': timeout
+            'timeout': timeout,
+            'vrf': vrf
         }
     )
 
 
-def ping(destination, source='', ttl=0, timeout=0, size=0, count=0):
+@proxy_napalm_wrap
+def ping(destination, source=None, ttl=None, timeout=None, size=None, count=None, vrf=None, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Executes a ping on the network device and returns a dictionary as a result.
 
-    :param destination: Hostname or IP address of remote host
-    :param source: Source address of echo request
-    :param ttl: IP time-to-live value (IPv6 hop-limit value) (1..255 hops)
-    :param timeout: Maximum wait time after sending final packet (seconds)
-    :param size: Size of request packets (0..65468 bytes)
-    :param count: Number of ping requests to send (1..2000000000 packets)
+    destination
+        Hostname or IP address of remote host
+
+    source
+        Source address of echo request
+
+    ttl
+        IP time-to-live value (IPv6 hop-limit value) (1..255 hops)
+
+    timeout
+        Maximum wait time after sending final packet (seconds)
+
+    size
+        Size of request packets (0..65468 bytes)
+
+    count
+        Number of ping requests to send (1..2000000000 packets)
+
+    vrf
+        VRF (routing instance) for ping attempt
+
+        .. versionadded:: 2016.11.4
 
     CLI Example:
 
@@ -421,7 +492,8 @@ def ping(destination, source='', ttl=0, timeout=0, size=0, count=0):
         salt '*' net.ping 8.8.8.8 source=127.0.0.1 timeout=1 count=100
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'ping',
         **{
             'destination': destination,
@@ -429,12 +501,14 @@ def ping(destination, source='', ttl=0, timeout=0, size=0, count=0):
             'ttl': ttl,
             'timeout': timeout,
             'size': size,
-            'count': count
+            'count': count,
+            'vrf': vrf
         }
     )
 
 
-def arp(interface='', ipaddr='', macaddr=''):
+@proxy_napalm_wrap
+def arp(interface='', ipaddr='', macaddr='', **kwargs):  # pylint: disable=unused-argument
 
     '''
     NAPALM returns a list of dictionaries with details of the ARP entries.
@@ -471,7 +545,8 @@ def arp(interface='', ipaddr='', macaddr=''):
         ]
     '''
 
-    proxy_output = __proxy__['napalm.call'](
+    proxy_output = salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'get_arp_table',
         **{
         }
@@ -498,7 +573,8 @@ def arp(interface='', ipaddr='', macaddr=''):
     return proxy_output
 
 
-def ipaddrs():
+@proxy_napalm_wrap
+def ipaddrs(**kwargs):  # pylint: disable=unused-argument
 
     '''
     Returns IP addresses configured on the device.
@@ -508,7 +584,7 @@ def ipaddrs():
     Returns all configured IP addresses on all interfaces as a dictionary of dictionaries.\
     Keys of the main dictionary represent the name of the interface.\
     Values of the main dictionary represent are dictionaries that may consist of two keys\
-    'ipv4' and 'ipv6' (one, both or none) which are themselvs dictionaries witht the IP addresses as keys.\
+    'ipv4' and 'ipv6' (one, both or none) which are themselvs dictionaries with the IP addresses as keys.\
 
     CLI Example:
 
@@ -549,14 +625,16 @@ def ipaddrs():
         }
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'get_interfaces_ip',
         **{
         }
     )
 
 
-def interfaces():
+@proxy_napalm_wrap
+def interfaces(**kwargs):  # pylint: disable=unused-argument
 
     '''
     Returns details of the interfaces on the device.
@@ -594,14 +672,16 @@ def interfaces():
         }
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'get_interfaces',
         **{
         }
     )
 
 
-def lldp(interface=''):
+@proxy_napalm_wrap
+def lldp(interface='', **kwargs):  # pylint: disable=unused-argument
 
     '''
     Returns a detailed view of the LLDP neighbors.
@@ -640,7 +720,8 @@ def lldp(interface=''):
         }
     '''
 
-    proxy_output = __proxy__['napalm.call'](
+    proxy_output = salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'get_lldp_neighbors_detail',
         **{
         }
@@ -661,7 +742,8 @@ def lldp(interface=''):
     return proxy_output
 
 
-def mac(address='', interface='', vlan=0):
+@proxy_napalm_wrap
+def mac(address='', interface='', vlan=0, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Returns the MAC Address Table on the device.
@@ -704,7 +786,8 @@ def mac(address='', interface='', vlan=0):
         ]
     '''
 
-    proxy_output = __proxy__['napalm.call'](
+    proxy_output = salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'get_mac_address_table',
         **{
         }
@@ -732,17 +815,118 @@ def mac(address='', interface='', vlan=0):
     return proxy_output
 
 
+@proxy_napalm_wrap
+def config(source=None, **kwargs):  # pylint: disable=unused-argument
+    '''
+    .. versionadded:: 2017.7.0
+
+    Return the whole configuration of the network device.
+    By default, it will return all possible configuration
+    sources supported by the network device.
+    At most, there will be:
+
+    - running config
+    - startup config
+    - candidate config
+
+    To return only one of the configurations, you can use
+    the ``source`` argument.
+
+    source (optional)
+        Which configuration type you want to display, default is all of them.
+
+        Options:
+
+        - running
+        - candidate
+        - startup
+
+    :return:
+        The object returned is a dictionary with the following keys:
+
+        - running (string): Representation of the native running configuration.
+        - candidate (string): Representation of the native candidate configuration.
+            If the device doesnt differentiate between running and startup
+            configuration this will an empty string.
+        - startup (string): Representation of the native startup configuration.
+            If the device doesnt differentiate between running and startup
+            configuration this will an empty string.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' net.config
+        salt '*' net.config source=candidate
+    '''
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
+        'get_config',
+        **{
+            'retrieve': source
+        }
+    )
+
+
+@proxy_napalm_wrap
+def optics(**kwargs):  # pylint: disable=unused-argument
+    '''
+    .. versionadded:: 2017.7.0
+
+    Fetches the power usage on the various transceivers installed
+    on the network device (in dBm), and returns a view that conforms with the
+    OpenConfig model openconfig-platform-transceiver.yang.
+
+    :return:
+        Returns a dictionary where the keys are as listed below:
+            * intf_name (unicode)
+                * physical_channels
+                    * channels (list of dicts)
+                        * index (int)
+                        * state
+                            * input_power
+                                * instant (float)
+                                * avg (float)
+                                * min (float)
+                                * max (float)
+                            * output_power
+                                * instant (float)
+                                * avg (float)
+                                * min (float)
+                                * max (float)
+                            * laser_bias_current
+                                * instant (float)
+                                * avg (float)
+                                * min (float)
+                                * max (float)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' net.optics
+    '''
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
+        'get_optics',
+        **{
+        }
+    )
+
 # <---- Call NAPALM getters --------------------------------------------------------------------------------------------
 
 # ----- Configuration specific functions ------------------------------------------------------------------------------>
 
 
+@proxy_napalm_wrap
 def load_config(filename=None,
                 text=None,
                 test=False,
                 commit=True,
                 debug=False,
-                replace=False):
+                replace=False,
+                inherit_napalm_device=None,
+                **kwargs):  # pylint: disable=unused-argument
     '''
     Applies configuration changes on the device. It can be loaded from a file or from inline string.
     If you send both a filename and a string containing the configuration, the file has higher precedence.
@@ -752,7 +936,7 @@ def load_config(filename=None,
 
     To avoid committing the configuration, set the argument ``test`` to ``True`` and will discard (dry run).
 
-    To keep the chnages but not commit, set ``commit`` to ``False``.
+    To keep the changes but not commit, set ``commit`` to ``False``.
 
     To replace the config, set ``replace`` to ``True``.
 
@@ -767,22 +951,18 @@ def load_config(filename=None,
         and will commit the changes on the device.
 
     commit: True
-        Commit? (default: ``True``) Sometimes it is not needed to commit the config immediately
-        after loading the changes. E.g.: a state loads a couple of parts (add / remove / update)
-        and would not be optimal to commit after each operation.
-        Also, from the CLI when the user needs to apply the similar changes before committing,
-        can specify ``commit=False`` and will not discard the config.
+        Commit? Default: ``True``.
 
     debug: False
-        Debug mode. Will insert a new key under the output dictionary, as ``loaded_config`` contaning the raw
+        Debug mode. Will insert a new key under the output dictionary, as ``loaded_config`` containing the raw
         configuration loaded on the device.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     replace: False
         Load and replace the configuration. Default: ``False``.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     :return: a dictionary having the following keys:
 
@@ -817,7 +997,17 @@ def load_config(filename=None,
     fun = 'load_merge_candidate'
     if replace:
         fun = 'load_replace_candidate'
-    _loaded = __proxy__['napalm.call'](
+    if salt.utils.napalm.not_always_alive(__opts__):
+        # if a not-always-alive proxy
+        # or regular minion
+        # do not close the connection after loading the config
+        # this will be handled in _config_logic
+        # after running the other features:
+        # compare_config, discard / commit
+        # which have to be over the same session
+        napalm_device['CLOSE'] = False  # pylint: disable=undefined-variable
+    _loaded = salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         fun,
         **{
             'filename': filename,
@@ -827,15 +1017,18 @@ def load_config(filename=None,
     loaded_config = None
     if debug:
         if filename:
-            loaded_config = open(filename).read()
+            with salt.utils.files.fopen(filename) as rfh:
+                loaded_config = rfh.read()
         else:
             loaded_config = text
-    return _config_logic(_loaded,
+    return _config_logic(napalm_device,  # pylint: disable=undefined-variable
+                         _loaded,
                          test=test,
                          commit_config=commit,
                          loaded_config=loaded_config)
 
 
+@proxy_napalm_wrap
 def load_template(template_name,
                   template_source=None,
                   template_path=None,
@@ -846,111 +1039,153 @@ def load_template(template_name,
                   template_mode='755',
                   saltenv=None,
                   template_engine='jinja',
-                  skip_verify=True,
+                  skip_verify=False,
                   defaults=None,
                   test=False,
                   commit=True,
                   debug=False,
                   replace=False,
+                  inherit_napalm_device=None,  # pylint: disable=unused-argument
                   **template_vars):
     '''
-    Renders a configuration template (Jinja) and loads the result on the device.
+    Renders a configuration template (default: Jinja) and loads the result on the device.
 
-    By default this function will commit the changes. If there are no changes, it does not commit and
-    the flag ``already_configured`` will be set as ``True`` to point this out.
+    By default this function will commit the changes. If there are no changes,
+    it does not commit, discards he config and the flag ``already_configured``
+    will be set as ``True`` to point this out.
 
-    To avoid committing the configuration, set the argument ``test`` to ``True`` and will discard (dry run).
+    To avoid committing the configuration, set the argument ``test`` to ``True``
+    and will discard (dry run).
 
-    To keep the chnages but not commit, set ``commit`` to ``False``.
+    To preserve the changes, set ``commit`` to ``False``.
+    However, this is recommended to be used only in exceptional cases
+    when there are applied few consecutive states
+    and/or configuration changes.
+    Otherwise the user might forget that the config DB is locked
+    and the candidate config buffer is not cleared/merged in the running config.
 
     To replace the config, set ``replace`` to ``True``.
 
     template_name
-        Identifies the template name. If specifies the complete path, will render the template via
+        Identifies path to the template source.
+        The template can be either stored on the local machine, either remotely.
+        The recommended location is under the ``file_roots``
+        as specified in the master config file.
+        For example, let's suppose the ``file_roots`` is configured as:
+
+        .. code-block:: yaml
+
+            file_roots:
+                base:
+                    - /etc/salt/states
+
+        Placing the template under ``/etc/salt/states/templates/example.jinja``,
+        it can be used as ``salt://templates/example.jinja``.
+        Alternatively, for local files, the user can specify the absolute path.
+        If remotely, the source can be retrieved via ``http``, ``https`` or ``ftp``.
+
+        Examples:
+
+        - ``salt://my_template.jinja``
+        - ``/absolute/path/to/my_template.jinja``
+        - ``http://example.com/template.cheetah``
+        - ``https:/example.com/template.mako``
+        - ``ftp://example.com/template.py``
 
     template_source: None
         Inline config template to be rendered and loaded on the device.
 
     template_path: None
-        Specifies the absolute path to a the template directory.
+        Required only in case the argument ``template_name`` provides only the file basename
+        when referencing a local template using the absolute path.
+        E.g.: if ``template_name`` is specified as ``my_template.jinja``,
+        in order to find the template, this argument must be provided:
+        ``template_path: /absolute/path/to/``.
 
     template_hash: None
         Hash of the template file. Format: ``{hash_type: 'md5', 'hsum': <md5sum>}``
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     template_hash_name: None
-        When ``template_hash`` refers to a remote file, this specifies the filename to look for in that file.
+        When ``template_hash`` refers to a remote file,
+        this specifies the filename to look for in that file.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     template_group: root
         Owner of file.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     template_user: root
         Group owner of file.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     template_user: 755
-        Permissions of file
+        Permissions of file.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     saltenv: base
-        Specifies the template environment. This will influence the relative imports inside the templates.
+        Specifies the template environment.
+        This will influence the relative imports inside the templates.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     template_engine: jinja
         The following templates engines are supported:
 
-            - :mod:`cheetah<salt.renderers.cheetah>`
-            - :mod:`genshi<salt.renderers.genshi>`
-            - :mod:`jinja<salt.renderers.jinja>`
-            - :mod:`mako<salt.renderers.mako>`
-            - :mod:`py<salt.renderers.py>`
-            - :mod:`wempy<salt.renderers.wempy>`
+        - :mod:`cheetah<salt.renderers.cheetah>`
+        - :mod:`genshi<salt.renderers.genshi>`
+        - :mod:`jinja<salt.renderers.jinja>`
+        - :mod:`mako<salt.renderers.mako>`
+        - :mod:`py<salt.renderers.py>`
+        - :mod:`wempy<salt.renderers.wempy>`
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     skip_verify: True
-        If ``True``, hash verification of remote file sources (``http://``, ``https://``, ``ftp://``) will be skipped,
+        If ``True``, hash verification of remote file sources
+        (``http://``, ``https://``, ``ftp://``) will be skipped,
         and the ``source_hash`` argument will be ignored.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     test: False
-        Dry run? If set to ``True``, will apply the config, discard and return the changes. Default: ``False``
-        and will commit the changes on the device.
+        Dry run? If set to ``True``, will apply the config,
+        discard and return the changes.
+        Default: ``False`` and will commit the changes on the device.
 
     commit: True
-        Commit? (default: ``True``) Sometimes it is not needed to commit the config immediately
-        after loading the changes. E.g.: a state loads a couple of parts (add / remove / update)
-        and would not be optimal to commit after each operation.
-        Also, from the CLI when the user needs to apply the similar changes before committing,
-        can specify ``commit=False`` and will not discard the config.
+        Commit? (default: ``True``)
 
     debug: False
-        Debug mode. Will insert a new key under the output dictionary, as ``loaded_config`` contaning the raw
-        result after the template was rendered.
+        Debug mode. Will insert a new key under the output dictionary,
+        as ``loaded_config`` containing the raw result after the template was rendered.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     replace: False
         Load and replace the configuration.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     defaults: None
         Default variables/context passed to the template.
 
-        .. versionadded:: 2016.11.1
+        .. versionadded:: 2016.11.2
 
     **template_vars
         Dictionary with the arguments/context to be used when the template is rendered.
+
+        .. note::
+
+            Do not explicitly specify this argument.
+            This represents any other variable that will be sent
+            to the template rendering system.
+            Please see the examples below!
 
     :return: a dictionary having the following keys:
 
@@ -1086,7 +1321,7 @@ def load_template(template_name,
             if template_path and not file_exists:
                 template_name = __salt__['file.join'](template_path, template_name)
                 if not saltenv:
-                    # no saltenv overriden
+                    # no saltenv overridden
                     # use the custom template path
                     saltenv = template_path if not salt_render else 'base'
             elif salt_render and not saltenv:
@@ -1127,7 +1362,9 @@ def load_template(template_name,
                     _loaded['result'] = False
                     _loaded['comment'] = 'Error while rendering the template.'
                     return _loaded
-                _rendered = open(_temp_tpl_file).read()
+                with salt.utils.files.fopen(_temp_tpl_file) as rfh:
+                    _rendered = rfh.read()
+                __salt__['file.remove'](_temp_tpl_file)
             else:
                 return _loaded  # exit
 
@@ -1138,7 +1375,17 @@ def load_template(template_name,
             fun = 'load_merge_candidate'
             if replace:  # replace requested
                 fun = 'load_replace_candidate'
-            _loaded = __proxy__['napalm.call'](
+            if salt.utils.napalm.not_always_alive(__opts__):
+                # if a not-always-alive proxy
+                # or regular minion
+                # do not close the connection after loading the config
+                # this will be handled in _config_logic
+                # after running the other features:
+                # compare_config, discard / commit
+                # which have to be over the same session
+                napalm_device['CLOSE'] = False  # pylint: disable=undefined-variable
+            _loaded = salt.utils.napalm.call(
+                napalm_device,  # pylint: disable=undefined-variable
                 fun,
                 **{
                     'config': _rendered
@@ -1158,16 +1405,30 @@ def load_template(template_name,
                 'opts': __opts__  # inject opts content
             }
         )
-        _loaded = __proxy__['napalm.call']('load_template',
-                                           **load_templates_params)
-
-    return _config_logic(_loaded,
+        if salt.utils.napalm.not_always_alive(__opts__):
+            # if a not-always-alive proxy
+            # or regular minion
+            # do not close the connection after loading the config
+            # this will be handled in _config_logic
+            # after running the other features:
+            # compare_config, discard / commit
+            # which have to be over the same session
+            # so we'll set the CLOSE global explicitely as False
+            napalm_device['CLOSE'] = False  # pylint: disable=undefined-variable
+        _loaded = salt.utils.napalm.call(
+            napalm_device,  # pylint: disable=undefined-variable
+            'load_template',
+            **load_templates_params
+        )
+    return _config_logic(napalm_device,  # pylint: disable=undefined-variable
+                         _loaded,
                          test=test,
                          commit_config=commit,
                          loaded_config=loaded_config)
 
 
-def commit():
+@proxy_napalm_wrap
+def commit(inherit_napalm_device=None, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Commits the configuration changes made on the network device.
@@ -1179,13 +1440,15 @@ def commit():
         salt '*' net.commit
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'commit_config',
         **{}
     )
 
 
-def discard_config():
+@proxy_napalm_wrap
+def discard_config(inherit_napalm_device=None, **kwargs):  # pylint: disable=unused-argument
 
     """
     Discards the changes applied.
@@ -1197,13 +1460,15 @@ def discard_config():
         salt '*' net.discard_config
     """
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'discard_config',
         **{}
     )
 
 
-def compare_config():
+@proxy_napalm_wrap
+def compare_config(inherit_napalm_device=None, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Returns the difference between the running config and the candidate config.
@@ -1215,13 +1480,15 @@ def compare_config():
         salt '*' net.compare_config
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'compare_config',
         **{}
     )
 
 
-def rollback():
+@proxy_napalm_wrap
+def rollback(inherit_napalm_device=None, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Rollbacks the configuration.
@@ -1233,13 +1500,15 @@ def rollback():
         salt '*' net.rollback
     '''
 
-    return __proxy__['napalm.call'](
+    return salt.utils.napalm.call(
+        napalm_device,  # pylint: disable=undefined-variable
         'rollback',
         **{}
     )
 
 
-def config_changed():
+@proxy_napalm_wrap
+def config_changed(inherit_napalm_device=None, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Will prompt if the configuration has been changed.
@@ -1256,7 +1525,7 @@ def config_changed():
 
     is_config_changed = False
     reason = ''
-    try_compare = compare_config()
+    try_compare = compare_config(inherit_napalm_device=napalm_device)  # pylint: disable=undefined-variable
 
     if try_compare.get('result'):
         if try_compare.get('out'):
@@ -1269,15 +1538,16 @@ def config_changed():
     return is_config_changed, reason
 
 
-def config_control():
+@proxy_napalm_wrap
+def config_control(inherit_napalm_device=None, **kwargs):  # pylint: disable=unused-argument
 
     '''
     Will check if the configuration was changed.
     If differences found, will try to commit.
     In case commit unsuccessful, will try to rollback.
 
-    :return: A tuple with a boolean that specifies if the config was changed/commited/rollbacked on the device.\
-    And a string that provides more details of the reason why the configuration was not commited properly.
+    :return: A tuple with a boolean that specifies if the config was changed/committed/rollbacked on the device.\
+    And a string that provides more details of the reason why the configuration was not committed properly.
 
     CLI Example:
 
@@ -1289,9 +1559,9 @@ def config_control():
     result = True
     comment = ''
 
-    changed, not_changed_reason = config_changed()
+    changed, not_changed_rsn = config_changed(inherit_napalm_device=napalm_device)  # pylint: disable=undefined-variable
     if not changed:
-        return (changed, not_changed_reason)
+        return (changed, not_changed_rsn)
 
     # config changed, thus let's try to commit
     try_commit = commit()

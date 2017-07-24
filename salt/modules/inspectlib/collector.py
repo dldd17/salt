@@ -29,6 +29,7 @@ from salt.modules.inspectlib.entities import (AllowedDir, IgnoredDir, Package,
                                               PayloadFile, PackageCfgFile)
 
 import salt.utils
+import salt.utils.files
 from salt.utils import fsutils
 from salt.utils import reinit_crypto
 from salt.exceptions import CommandExecutionError
@@ -87,7 +88,7 @@ class Inspector(EnvLoader):
         '''
         if self.grains_core.os_data().get('os_family') == 'Debian':
             return self.__get_cfg_pkgs_dpkg()
-        elif self.grains_core.os_data().get('os_family') in ['SUSE', 'redhat']:
+        elif self.grains_core.os_data().get('os_family') in ['Suse', 'redhat']:
             return self.__get_cfg_pkgs_rpm()
         else:
             return dict()
@@ -163,7 +164,7 @@ class Inspector(EnvLoader):
             if self.grains_core.os_data().get('os_family') == 'Debian':
                 cfg_data = salt.utils.to_str(self._syscall("dpkg", None, None, '--verify',
                                                            pkg_name)[0]).split(os.linesep)
-            elif self.grains_core.os_data().get('os_family') in ['SUSE', 'redhat']:
+            elif self.grains_core.os_data().get('os_family') in ['Suse', 'redhat']:
                 cfg_data = salt.utils.to_str(self._syscall("rpm", None, None, '-V', '--nodeps', '--nodigest',
                                                            '--nosignature', '--nomtime', '--nolinkto',
                                                            pkg_name)[0]).split(os.linesep)
@@ -240,7 +241,7 @@ class Inspector(EnvLoader):
         '''
         if self.grains_core.os_data().get('os_family') == 'Debian':
             return self.__get_managed_files_dpkg()
-        elif self.grains_core.os_data().get('os_family') in ['SUSE', 'redhat']:
+        elif self.grains_core.os_data().get('os_family') in ['Suse', 'redhat']:
             return self.__get_managed_files_rpm()
 
         return list(), list(), list()
@@ -475,7 +476,7 @@ def is_alive(pidfile):
     Check if PID is still alive.
     '''
     try:
-        with salt.utils.fopen(pidfile) as fp_:
+        with salt.utils.files.fopen(pidfile) as fp_:
             os.kill(int(fp_.read().strip()), 0)
         return True
     except Exception as ex:
@@ -517,7 +518,7 @@ if __name__ == '__main__':
         pid = os.fork()
         if pid > 0:
             reinit_crypto()
-            with salt.utils.fopen(os.path.join(pidfile, EnvLoader.PID_FILE), 'w') as fp_:
+            with salt.utils.files.fopen(os.path.join(pidfile, EnvLoader.PID_FILE), 'w') as fp_:
                 fp_.write('{0}\n'.format(pid))
             sys.exit(0)
     except OSError as ex:

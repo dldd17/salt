@@ -135,7 +135,7 @@ def vg_present(name, devices=None, **kwargs):
                     ret['comment'] = '{0}\n{1}'.format(
                         ret['comment'],
                         '{0} is part of Volume Group'.format(device))
-                elif pvs[realdev]['Volume Group Name'] == '#orphans_lvm2':
+                elif pvs[realdev]['Volume Group Name'] in ['', '#orphans_lvm2']:
                     __salt__['lvm.vgextend'](name, device)
                     pvs = __salt__['lvm.pvdisplay'](realdev, real=True)
                     if pvs[realdev]['Volume Group Name'] == name:
@@ -211,6 +211,7 @@ def lv_present(name,
                pv='',
                thinvolume=False,
                thinpool=False,
+               force=False,
                **kwargs):
     '''
     Create a new logical volume
@@ -244,6 +245,12 @@ def lv_present(name,
 
     thinpool
         Logical volume is a thin pool
+
+    .. versionadded:: Oxygen
+
+    force
+        Assume yes to all prompts
+
     '''
     ret = {'changes': {},
            'comment': '',
@@ -276,13 +283,14 @@ def lv_present(name,
                                            pv=pv,
                                            thinvolume=thinvolume,
                                            thinpool=thinpool,
+                                           force=force,
                                            **kwargs)
 
         if __salt__['lvm.lvdisplay'](lvpath):
             ret['comment'] = 'Created Logical Volume {0}'.format(name)
             ret['changes']['created'] = changes
         else:
-            ret['comment'] = 'Failed to create Logical Volume {0}'.format(name)
+            ret['comment'] = 'Failed to create Logical Volume {0}. Error: {1}'.format(name, changes)
             ret['result'] = False
     return ret
 

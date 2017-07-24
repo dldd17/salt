@@ -66,12 +66,15 @@ class ContextDict(collections.MutableMapping):
     then allow any children to override the values of the parent.
     '''
 
-    def __init__(self, **data):
+    def __init__(self, threadsafe=False, **data):
         # state should be thread local, so this object can be threadsafe
         self._state = threading.local()
         # variable for the overridden data
         self._state.data = None
         self.global_data = {}
+        # Threadsafety indicates whether or not we should protect data stored
+        # in child context dicts from being leaked
+        self._threadsafe = threadsafe
 
     @property
     def active(self):
@@ -89,7 +92,7 @@ class ContextDict(collections.MutableMapping):
         '''
         Clone this context, and return the ChildContextDict
         '''
-        child = ChildContextDict(parent=self, overrides=kwargs)
+        child = ChildContextDict(parent=self, threadsafe=self._threadsafe, overrides=kwargs)
         return child
 
     def __setitem__(self, key, val):
@@ -122,24 +125,45 @@ class ContextDict(collections.MutableMapping):
         else:
             return iter(self.global_data)
 
+    def __copy__(self):
+        new_obj = type(self)(threadsafe=self._threadsafe)
+        if self.active:
+            new_obj.global_data = copy.copy(self._state.data)
+        else:
+            new_obj.global_data = copy.copy(self.global_data)
+        return new_obj
+
+    def __deepcopy__(self, memo):
+        new_obj = type(self)(threadsafe=self._threadsafe)
+        if self.active:
+            new_obj.global_data = copy.deepcopy(self._state.data, memo)
+        else:
+            new_obj.global_data = copy.deepcopy(self.global_data, memo)
+        return new_obj
+
 
 class ChildContextDict(collections.MutableMapping):
     '''An overrideable child of ContextDict
 
     '''
-    def __init__(self, parent, overrides=None):
+    def __init__(self, parent, overrides=None, threadsafe=False):
         self.parent = parent
         self._data = {} if overrides is None else overrides
         self._old_data = None
 
         # merge self.global_data into self._data
-        for k, v in six.iteritems(self.parent.global_data):
-            if k not in self._data:
-                # A deepcopy is necessary to avoid using the same
-                # objects in globals as we do in thread local storage.
-                # Otherwise, changing one would automatically affect
-                # the other.
-                self._data[k] = copy.deepcopy(v)
+        if threadsafe:
+            for k, v in six.iteritems(self.parent.global_data):
+                if k not in self._data:
+                    # A deepcopy is necessary to avoid using the same
+                    # objects in globals as we do in thread local storage.
+                    # Otherwise, changing one would automatically affect
+                    # the other.
+                    self._data[k] = copy.deepcopy(v)
+        else:
+            for k, v in six.iteritems(self.parent.global_data):
+                if k not in self._data:
+                    self._data[k] = v
 
     def __setitem__(self, key, val):
         self._data[key] = val

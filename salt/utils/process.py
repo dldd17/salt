@@ -20,6 +20,7 @@ import multiprocessing.util
 # Import salt libs
 import salt.defaults.exitcodes
 import salt.utils
+import salt.utils.files
 import salt.log.setup
 import salt.defaults.exitcodes
 from salt.log.mixins import NewStyleClassMixIn
@@ -74,7 +75,7 @@ def set_pidfile(pidfile, user):
     if not os.path.isdir(pdir) and pdir:
         os.makedirs(pdir)
     try:
-        with salt.utils.fopen(pidfile, 'w+') as ofile:
+        with salt.utils.files.fopen(pidfile, 'w+') as ofile:
             ofile.write(str(os.getpid()))
     except IOError:
         pass
@@ -128,7 +129,7 @@ def get_pidfile(pidfile):
     '''
     Return the pid from a pidfile as an integer
     '''
-    with salt.utils.fopen(pidfile) as pdf:
+    with salt.utils.files.fopen(pidfile) as pdf:
         pid = pdf.read()
 
     return int(pid)
@@ -278,7 +279,7 @@ class ProcessManager(object):
             kwargs = {}
 
         if salt.utils.is_windows():
-            # Need to ensure that 'log_queue' is correctly transfered to
+            # Need to ensure that 'log_queue' is correctly transferred to
             # processes that inherit from 'MultiprocessingProcess'.
             if type(MultiprocessingProcess) is type(tgt) and (
                     issubclass(tgt, MultiprocessingProcess)):
@@ -399,6 +400,8 @@ class ProcessManager(object):
                     yield gen.sleep(10)
                 else:
                     time.sleep(10)
+                if len(self._process_map) == 0:
+                    break
             # OSError is raised if a signal handler is called (SIGTERM) during os.wait
             except OSError:
                 break
@@ -416,6 +419,7 @@ class ProcessManager(object):
         if self._restart_processes is True:
             for pid, mapping in six.iteritems(self._process_map):
                 if not mapping['Process'].is_alive():
+                    log.trace('Process restart of {0}'.format(pid))
                     self.restart_process(pid)
 
     def kill_children(self, *args, **kwargs):
@@ -443,7 +447,7 @@ class ProcessManager(object):
                 # call 'taskkill', it will leave a 'taskkill' zombie process.
                 # We want to avoid this.
                 return
-            with salt.utils.fopen(os.devnull, 'wb') as devnull:
+            with salt.utils.files.fopen(os.devnull, 'wb') as devnull:
                 for pid, p_map in six.iteritems(self._process_map):
                     # On Windows, we need to explicitly terminate sub-processes
                     # because the processes don't have a sigterm handler.
@@ -685,6 +689,12 @@ class SignalHandlingMultiprocessingProcess(MultiprocessingProcess):
             msg += 'SIGTERM'
         msg += '. Exiting'
         log.debug(msg)
+        if HAS_PSUTIL:
+            process = psutil.Process(self.pid)
+            if hasattr(process, 'children'):
+                for child in process.children(recursive=True):
+                    if child.is_running():
+                        child.terminate()
         sys.exit(salt.defaults.exitcodes.EX_OK)
 
     def start(self):
@@ -696,8 +706,17 @@ class SignalHandlingMultiprocessingProcess(MultiprocessingProcess):
 def default_signals(*signals):
     old_signals = {}
     for signum in signals:
-        old_signals[signum] = signal.getsignal(signum)
-        signal.signal(signum, signal.SIG_DFL)
+        try:
+            old_signals[signum] = signal.getsignal(signum)
+            signal.signal(signum, signal.SIG_DFL)
+        except ValueError as exc:
+            # This happens when a netapi module attempts to run a function
+            # using wheel_async, because the process trying to register signals
+            # will not be the main PID.
+            log.trace(
+                'Failed to register signal for signum %d: %s',
+                signum, exc
+            )
 
     # Do whatever is needed with the reset signals
     yield

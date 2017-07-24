@@ -45,6 +45,9 @@ import os
 
 # Import salt libs
 import salt.utils
+import salt.utils.files
+import salt.utils.itertools
+import salt.utils.pkg
 from salt.exceptions import CommandExecutionError, MinionError
 import salt.ext.six as six
 
@@ -150,7 +153,7 @@ def parse_config(file_name='/usr/local/etc/pkg.conf'):
     if not os.path.isfile(file_name):
         return 'Unable to find {0} on file system'.format(file_name)
 
-    with salt.utils.fopen(file_name) as ifile:
+    with salt.utils.files.fopen(file_name) as ifile:
         for line in ifile:
             if line.startswith('#') or line.startswith('\n'):
                 pass
@@ -251,6 +254,8 @@ def refresh_db(jail=None, chroot=None, root=None, force=False):
 
             salt '*' pkg.refresh_db force=True
     '''
+    # Remove rtag file to keep multiple refreshes from happening in pkg states
+    salt.utils.pkg.clear_rtag(__opts__)
     cmd = _pkg(jail, chroot, root)
     cmd.append('update')
     if force:
@@ -1151,8 +1156,6 @@ def upgrade(*names, **kwargs):
         opts += 'n'
     if not dryrun:
         opts += 'y'
-    if opts:
-        opts = '-' + opts
 
     cmd = _pkg(jail, chroot, root)
     cmd.append('upgrade')

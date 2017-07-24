@@ -22,6 +22,7 @@ import random
 
 # Import Salt libs
 import salt.utils
+import salt.utils.files
 try:
     from salt.utils.nb_popen import NonBlockingPopen
 except ImportError:
@@ -154,11 +155,10 @@ def echo_parseable_environment(options, parser):
             '.github_token'
         )
         if os.path.isfile(github_access_token_path):
-            headers = {
-                'Authorization': 'token {0}'.format(
-                    open(github_access_token_path).read().strip()
-                )
-            }
+            with salt.utils.files.fopen(github_access_token_path) as rfh:
+                headers = {
+                    'Authorization': 'token {0}'.format(rfh.read().strip())
+                }
 
         http_req = requests.get(url, headers=headers)
         if http_req.status_code != 200:

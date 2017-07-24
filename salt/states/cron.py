@@ -143,7 +143,7 @@ from __future__ import absolute_import
 import os
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
 from salt.modules.cron import (
     _needs_change,
     _cron_matched
@@ -159,7 +159,8 @@ def _check_cron(user,
                 dayweek=None,
                 comment=None,
                 commented=None,
-                identifier=None):
+                identifier=None,
+                special=None):
     '''
     Return the changes
     '''
@@ -180,16 +181,21 @@ def _check_cron(user,
     if cmd is not None:
         cmd = str(cmd)
     lst = __salt__['cron.list_tab'](user)
-    for cron in lst['crons']:
-        if _cron_matched(cron, cmd, identifier):
-            if any([_needs_change(x, y) for x, y in
-                    ((cron['minute'], minute), (cron['hour'], hour),
-                     (cron['daymonth'], daymonth), (cron['month'], month),
-                     (cron['dayweek'], dayweek), (cron['identifier'], identifier),
-                     (cron['cmd'], cmd), (cron['comment'], comment),
-                     (cron['commented'], commented))]):
-                return 'update'
-            return 'present'
+    if special is None:
+        for cron in lst['crons']:
+            if _cron_matched(cron, cmd, identifier):
+                if any([_needs_change(x, y) for x, y in
+                        ((cron['minute'], minute), (cron['hour'], hour),
+                         (cron['daymonth'], daymonth), (cron['month'], month),
+                         (cron['dayweek'], dayweek), (cron['identifier'], identifier),
+                         (cron['cmd'], cmd), (cron['comment'], comment),
+                         (cron['commented'], commented))]):
+                    return 'update'
+                return 'present'
+    else:
+        for cron in lst['special']:
+            if special == cron['spec'] and cmd == cron['cmd']:
+                return 'present'
     return 'absent'
 
 
@@ -293,7 +299,7 @@ def present(name,
 
         .. versionadded:: 2016.3.0
     '''
-    name = ' '.join(name.strip().split())
+    name = name.strip()
     if identifier is False:
         identifier = name
     ret = {'changes': {},
@@ -310,7 +316,8 @@ def present(name,
                              dayweek=dayweek,
                              comment=comment,
                              commented=commented,
-                             identifier=identifier)
+                             identifier=identifier,
+                             special=special)
         ret['result'] = None
         if status == 'absent':
             ret['comment'] = 'Cron {0} is set to be added'.format(name)
@@ -380,7 +387,7 @@ def absent(name,
     ###       cannot be removed from the function definition, otherwise the use
     ###       of unsupported arguments will result in a traceback.
 
-    name = ' '.join(name.strip().split())
+    name = name.strip()
     if identifier is False:
         identifier = name
     ret = {'name': name,
@@ -389,7 +396,7 @@ def absent(name,
            'comment': ''}
 
     if __opts__['test']:
-        status = _check_cron(user, name)
+        status = _check_cron(user, name, identifier=identifier)
         ret['result'] = None
         if status == 'absent':
             ret['result'] = True
@@ -510,10 +517,18 @@ def file(name,
     '''
     # Initial set up
     mode = '0600'
-    owner, group, crontab_dir = _get_cron_info()
 
-    cron_path = salt.utils.mkstemp()
-    with salt.utils.fopen(cron_path, 'w+') as fp_:
+    try:
+        group = __salt__['user.info'](user)['groups'][0]
+    except Exception:
+        ret = {'changes': {},
+               'comment': "Could not identify group for user {0}".format(user),
+               'name': name,
+               'result': False}
+        return ret
+
+    cron_path = salt.utils.files.mkstemp()
+    with salt.utils.files.fopen(cron_path, 'w+') as fp_:
         raw_cron = __salt__['cron.raw_cron'](user)
         if not raw_cron.endswith('\n'):
             raw_cron = "{0}\n".format(raw_cron)
@@ -539,7 +554,7 @@ def file(name,
                                              source,
                                              source_hash,
                                              source_hash_name,
-                                             owner,
+                                             user,
                                              group,
                                              mode,
                                              template,
@@ -565,7 +580,7 @@ def file(name,
             source,
             source_hash,
             source_hash_name,
-            owner,
+            user,
             group,
             mode,
             __env__,
@@ -593,7 +608,7 @@ def file(name,
             ret,
             source,
             source_sum,
-            owner,
+            user,
             group,
             mode,
             __env__,
@@ -606,17 +621,22 @@ def file(name,
         return ret
 
     cron_ret = None
-    if ret['changes']:
+    if "diff" in ret['changes']:
         cron_ret = __salt__['cron.write_cron_file_verbose'](user, cron_path)
-        ret['comment'] = 'Crontab for user {0} was updated'.format(user)
+        # Check cmd return code and show success or failure
+        if cron_ret['retcode'] == 0:
+            ret['comment'] = 'Crontab for user {0} was updated'.format(user)
+            ret['result'] = True
+            ret['changes'] = ret['changes']['diff']
+        else:
+            ret['comment'] = 'Unable to update user {0} crontab {1}.' \
+                             ' Error: {2}'.format(user, cron_path, cron_ret['stderr'])
+            ret['result'] = False
+            ret['changes'] = {}
     elif ret['result']:
         ret['comment'] = 'Crontab for user {0} is in the correct ' \
                          'state'.format(user)
-
-    if cron_ret and cron_ret['retcode']:
-        ret['comment'] = 'Unable to update user {0} crontab {1}.' \
-                         ' Error: {2}'.format(user, cron_path, cron_ret['stderr'])
-        ret['result'] = False
+        ret['changes'] = {}
 
     os.unlink(cron_path)
     return ret
@@ -689,7 +709,7 @@ def env_absent(name,
         the root user
     '''
 
-    name = ' '.join(name.strip().split())
+    name = name.strip()
     ret = {'name': name,
            'result': True,
            'changes': {},

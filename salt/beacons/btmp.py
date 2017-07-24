@@ -14,11 +14,11 @@ import os
 import struct
 
 # Import Salt Libs
-import salt.utils
+import salt.utils.files
 
 __virtualname__ = 'btmp'
 BTMP = '/var/log/btmp'
-FMT = '<hI32s4s32s256siili4l20s'
+FMT = 'hi32s4s32s256shhiii4i20x'
 FIELDS = [
           'type',
           'PID',
@@ -71,7 +71,7 @@ def beacon(config):
           btmp: {}
     '''
     ret = []
-    with salt.utils.fopen(BTMP, 'rb') as fp_:
+    with salt.utils.files.fopen(BTMP, 'rb') as fp_:
         loc = __context__.get(LOC_KEY, 0)
         if loc == 0:
             fp_.seek(0, 2)

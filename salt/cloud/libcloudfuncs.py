@@ -17,6 +17,7 @@ from salt.ext.six.moves import zip
 # Import libcloud
 try:
     import libcloud
+    import re
     from libcloud.compute.types import Provider
     from libcloud.compute.providers import get_driver
     from libcloud.compute.deployment import (
@@ -25,7 +26,7 @@ try:
     )
     HAS_LIBCLOUD = True
     LIBCLOUD_VERSION_INFO = tuple([
-        int(part) for part in libcloud.__version__.replace('-', '.').split('.')[:3]
+        int(part) for part in libcloud.__version__.replace('-', '.').replace('rc', '.').split('.')[:3]
     ])
 
 except ImportError:

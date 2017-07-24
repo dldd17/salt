@@ -18,7 +18,7 @@ except ImportError:
 
 # Import salt libs
 import salt.ext.six as six
-import salt.utils
+import salt.utils.files
 from salt.exceptions import SaltInvocationError
 
 # Define the module's virtual name
@@ -76,10 +76,12 @@ def info(name):
             python_shell=False).split(':')[5:7]
     elif __grains__['kernel'] in ('NetBSD', 'OpenBSD'):
         try:
-            with salt.utils.fopen('/etc/master.passwd', 'r') as fp_:
+            with salt.utils.files.fopen('/etc/master.passwd', 'r') as fp_:
                 for line in fp_:
                     if line.startswith('{0}:'.format(name)):
-                        change, expire = line.split(':')[5:7]
+                        key = line.split(':')
+                        change, expire = key[5:7]
+                        ret['passwd'] = str(key[1])
                         break
         except IOError:
             change = expire = None

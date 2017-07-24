@@ -93,6 +93,20 @@ def set_(name, value, **kwargs):
     if 'jail' in kwargs:
         cmd += ' -j '+kwargs['jail']
 
+    # This is here because the YAML parser likes to convert the string literals
+    # YES, NO, Yes, No, True, False, etc. to boolean types.  However, in this case,
+    # we will check to see if that happened and replace it with "YES" or "NO" because
+    # those items are accepted in sysrc.
+    if type(value) == bool:
+        if value:
+            value = "YES"
+        else:
+            value = "NO"
+
+    # This is here for the same reason, except for numbers
+    if type(value) == int:
+        value = str(value)
+
     cmd += ' '+name+"=\""+value+"\""
 
     sysrcs = __salt__['cmd.run'](cmd)
@@ -101,13 +115,10 @@ def set_(name, value, **kwargs):
     for sysrc in sysrcs.split("\n"):
         rcfile = sysrc.split(': ')[0]
         var = sysrc.split(': ')[1]
-        oldval = sysrc.split(': ')[2].split(" -> ")[0]
-        newval = sysrc.split(': ')[2].split(" -> ")[1]
+        oldval = sysrc.split(': ')[2].strip().split("->")[0]
+        newval = sysrc.split(': ')[2].strip().split("->")[1]
         if rcfile not in ret:
             ret[rcfile] = {}
-        #ret[rcfile][var] = {}
-        #ret[rcfile][var]['old'] = oldval
-        #ret[rcfile][var]['new'] = newval
         ret[rcfile][var] = newval
     return ret
 

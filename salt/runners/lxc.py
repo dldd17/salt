@@ -15,6 +15,7 @@ import logging
 # Import Salt libs
 import salt.client
 import salt.utils
+import salt.utils.files
 import salt.utils.virt
 import salt.utils.cloud
 import salt.key
@@ -315,7 +316,7 @@ def init(names, host=None, saltcloud_mode=False, quiet=False, **kwargs):
             saved_kwargs = kw
             kw = client.cmd(
                 host, 'lxc.cloud_init_interface', args + [kw],
-                expr_form='list', timeout=600).get(host, {})
+                tgt_type='list', timeout=600).get(host, {})
             kw.update(saved_kwargs)
         name = kw.pop('name', name)
         # be sure not to seed an already seeded host
@@ -372,10 +373,10 @@ def init(names, host=None, saltcloud_mode=False, quiet=False, **kwargs):
         if explicit_auth:
             fcontent = ''
             if os.path.exists(key):
-                with salt.utils.fopen(key) as fic:
+                with salt.utils.files.fopen(key) as fic:
                     fcontent = fic.read().strip()
             if pub_key.strip() != fcontent:
-                with salt.utils.fopen(key, 'w') as fic:
+                with salt.utils.files.fopen(key, 'w') as fic:
                     fic.write(pub_key)
                     fic.flush()
         mid = j_ret.get('mid', None)

@@ -23,7 +23,9 @@ import salt.daemons.masterapi
 import salt.exceptions
 import salt.minion
 import salt.utils
+import salt.utils.args
 import salt.utils.event
+import salt.utils.files
 import salt.utils.kinds
 
 # pylint: disable=import-error,no-name-in-module,redefined-builtin
@@ -118,7 +120,7 @@ class KeyCLI(object):
         if self.opts['eauth']:
             if 'token' in self.opts:
                 try:
-                    with salt.utils.fopen(os.path.join(self.opts['cachedir'], '.root_key'), 'r') as fp_:
+                    with salt.utils.files.fopen(os.path.join(self.opts['cachedir'], '.root_key'), 'r') as fp_:
                         low['key'] = fp_.readline()
                 except IOError:
                     low['token'] = self.opts['token']
@@ -271,7 +273,8 @@ class KeyCLI(object):
                         ret = list_ret
                     for minions in ret.values():
                         for minion in minions:
-                            print('Key for minion {0} {1}ed.'.format(minion, cmd))
+                            print('Key for minion {0} {1}ed.'.format(minion,
+                                                                     cmd.rstrip('e')))
                 elif isinstance(ret, dict):
                     salt.output.display_output(ret, 'key', opts=self.opts)
                 else:
@@ -338,11 +341,11 @@ class MultiKeyCLI(KeyCLI):
     def print_all(self):
         self._call_all('print_all')
 
-    def finger(self, match):
-        self._call_all('finger', match)
+    def finger(self, match, hash_type):
+        self._call_all('finger', match, hash_type)
 
-    def finger_all(self):
-        self._call_all('finger_all')
+    def finger_all(self, hash_type):
+        self._call_all('finger_all', hash_type)
 
     def prep_signature(self):
         self._call_all('prep_signature')
@@ -357,7 +360,7 @@ class Key(object):
     REJ = 'minions_rejected'
     DEN = 'minions_denied'
 
-    def __init__(self, opts):
+    def __init__(self, opts, io_loop=None):
         self.opts = opts
         kind = self.opts.get('__role', '')  # application kind
         if kind not in salt.utils.kinds.APPL_KINDS:
@@ -369,7 +372,9 @@ class Key(object):
                 opts['sock_dir'],
                 opts['transport'],
                 opts=opts,
-                listen=False)
+                listen=False,
+                io_loop=io_loop
+                )
 
     def _check_minions_directories(self):
         '''
@@ -492,10 +497,10 @@ class Key(object):
                 for minion in os.listdir(m_cache):
                     if minion not in minions and minion not in preserve_minions:
                         shutil.rmtree(os.path.join(m_cache, minion))
-            cache = salt.cache.Cache(self.opts)
-            clist = cache.list(self.ACC)
+            cache = salt.cache.factory(self.opts)
+            clist = cache.ls(self.ACC)
             if clist:
-                for minion in cache.list(self.ACC):
+                for minion in clist:
                     if minion not in minions and minion not in preserve_minions:
                         cache.flush('{0}/{1}'.format(self.ACC, minion))
 
@@ -646,7 +651,7 @@ class Key(object):
             ret[status] = {}
             for key in salt.utils.isorted(keys):
                 path = os.path.join(self.opts['pki_dir'], status, key)
-                with salt.utils.fopen(path, 'r') as fp_:
+                with salt.utils.files.fopen(path, 'r') as fp_:
                     ret[status][key] = fp_.read()
         return ret
 
@@ -659,7 +664,7 @@ class Key(object):
             ret[status] = {}
             for key in salt.utils.isorted(keys):
                 path = os.path.join(self.opts['pki_dir'], status, key)
-                with salt.utils.fopen(path, 'r') as fp_:
+                with salt.utils.files.fopen(path, 'r') as fp_:
                     ret[status][key] = fp_.read()
         return ret
 
@@ -895,10 +900,13 @@ class Key(object):
             salt.crypt.dropfile(self.opts['cachedir'], self.opts['user'])
         return self.list_keys()
 
-    def finger(self, match):
+    def finger(self, match, hash_type=None):
         '''
         Return the fingerprint for a specified key
         '''
+        if hash_type is None:
+            hash_type = __opts__['hash_type']
+
         matches = self.name_match(match, True)
         ret = {}
         for status, keys in six.iteritems(matches):
@@ -908,13 +916,16 @@ class Key(object):
                     path = os.path.join(self.opts['pki_dir'], key)
                 else:
                     path = os.path.join(self.opts['pki_dir'], status, key)
-                ret[status][key] = salt.utils.pem_finger(path, sum_type=self.opts['hash_type'])
+                ret[status][key] = salt.utils.pem_finger(path, sum_type=hash_type)
         return ret
 
-    def finger_all(self):
+    def finger_all(self, hash_type=None):
         '''
         Return fingerprints for all keys
         '''
+        if hash_type is None:
+            hash_type = __opts__['hash_type']
+
         ret = {}
         for status, keys in six.iteritems(self.all_keys()):
             ret[status] = {}
@@ -923,7 +934,7 @@ class Key(object):
                     path = os.path.join(self.opts['pki_dir'], key)
                 else:
                     path = os.path.join(self.opts['pki_dir'], status, key)
-                ret[status][key] = salt.utils.pem_finger(path, sum_type=self.opts['hash_type'])
+                ret[status][key] = salt.utils.pem_finger(path, sum_type=hash_type)
         return ret
 
 
@@ -964,10 +975,10 @@ class RaetKey(Key):
             for minion in os.listdir(m_cache):
                 if minion not in minions:
                     shutil.rmtree(os.path.join(m_cache, minion))
-            cache = salt.cache.Cache(self.opts)
-            clist = cache.list(self.ACC)
+            cache = salt.cache.factory(self.opts)
+            clist = cache.ls(self.ACC)
             if clist:
-                for minion in cache.list(self.ACC):
+                for minion in clist:
                     if minion not in minions and minion not in preserve_minions:
                         cache.flush('{0}/{1}'.format(self.ACC, minion))
 
@@ -996,7 +1007,7 @@ class RaetKey(Key):
                 if not name or prefix != 'estate':
                     continue
                 path = os.path.join(road_cache, road)
-                with salt.utils.fopen(path, 'rb') as fp_:
+                with salt.utils.files.fopen(path, 'rb') as fp_:
                     if ext == '.json':
                         data = json.load(fp_)
                     elif ext == '.msgpack':
@@ -1008,7 +1019,7 @@ class RaetKey(Key):
         '''
         Use libnacl to generate and safely save a private key
         '''
-        import libnacl.public
+        import libnacl.dual  # pylint: disable=3rd-party-module-not-gated
         d_key = libnacl.dual.DualSecret()
         keydir, keyname, _, _ = self._get_key_attrs(keydir, keyname,
                                                     keysize, user)
@@ -1051,7 +1062,7 @@ class RaetKey(Key):
                 'pub': pub,
                 'verify': verify}
         if self.opts['open_mode']:  # always accept and overwrite
-            with salt.utils.fopen(acc_path, 'w+b') as fp_:
+            with salt.utils.files.fopen(acc_path, 'w+b') as fp_:
                 fp_.write(self.serial.dumps(keydata))
                 return self.ACC
         if os.path.isfile(rej_path):
@@ -1059,7 +1070,7 @@ class RaetKey(Key):
             return self.REJ
         elif os.path.isfile(acc_path):
             # The minion id has been accepted, verify the key strings
-            with salt.utils.fopen(acc_path, 'rb') as fp_:
+            with salt.utils.files.fopen(acc_path, 'rb') as fp_:
                 keydata = self.serial.loads(fp_.read())
             if keydata['pub'] == pub and keydata['verify'] == verify:
                 return self.ACC
@@ -1069,7 +1080,7 @@ class RaetKey(Key):
         elif os.path.isfile(pre_path):
             auto_reject = self.auto_key.check_autoreject(minion_id)
             auto_sign = self.auto_key.check_autosign(minion_id)
-            with salt.utils.fopen(pre_path, 'rb') as fp_:
+            with salt.utils.files.fopen(pre_path, 'rb') as fp_:
                 keydata = self.serial.loads(fp_.read())
             if keydata['pub'] == pub and keydata['verify'] == verify:
                 if auto_reject:
@@ -1100,7 +1111,7 @@ class RaetKey(Key):
         else:
             w_path = pre_path
             ret = self.PEND
-        with salt.utils.fopen(w_path, 'w+b') as fp_:
+        with salt.utils.files.fopen(w_path, 'w+b') as fp_:
             fp_.write(self.serial.dumps(keydata))
             return ret
 
@@ -1112,7 +1123,7 @@ class RaetKey(Key):
         verify: <verify>
         '''
         path = os.path.join(self.opts['pki_dir'], status, minion_id)
-        with salt.utils.fopen(path, 'r') as fp_:
+        with salt.utils.files.fopen(path, 'r') as fp_:
             keydata = self.serial.loads(fp_.read())
             return 'pub: {0}\nverify: {1}'.format(
                     keydata['pub'],
@@ -1122,7 +1133,7 @@ class RaetKey(Key):
         '''
         Return a sha256 kingerprint for the key
         '''
-        with salt.utils.fopen(path, 'r') as fp_:
+        with salt.utils.files.fopen(path, 'r') as fp_:
             keydata = self.serial.loads(fp_.read())
             key = 'pub: {0}\nverify: {1}'.format(
                     keydata['pub'],
@@ -1320,10 +1331,13 @@ class RaetKey(Key):
         self.check_minion_cache()
         return self.list_keys()
 
-    def finger(self, match):
+    def finger(self, match, hash_type=None):
         '''
         Return the fingerprint for a specified key
         '''
+        if hash_type is None:
+            hash_type = __opts__['hash_type']
+
         matches = self.name_match(match, True)
         ret = {}
         for status, keys in six.iteritems(matches):
@@ -1336,10 +1350,13 @@ class RaetKey(Key):
                 ret[status][key] = self._get_key_finger(path)
         return ret
 
-    def finger_all(self):
+    def finger_all(self, hash_type=None):
         '''
         Return fingerprints for all keys
         '''
+        if hash_type is None:
+            hash_type = __opts__['hash_type']
+
         ret = {}
         for status, keys in six.iteritems(self.list_keys()):
             ret[status] = {}
@@ -1372,7 +1389,7 @@ class RaetKey(Key):
         path = os.path.join(self.opts['pki_dir'], status, minion_id)
         if not os.path.isfile(path):
             return {}
-        with salt.utils.fopen(path, 'rb') as fp_:
+        with salt.utils.files.fopen(path, 'rb') as fp_:
             return self.serial.loads(fp_.read())
 
     def read_local(self):
@@ -1383,7 +1400,7 @@ class RaetKey(Key):
         path = os.path.join(self.opts['pki_dir'], 'local.key')
         if not os.path.isfile(path):
             return {}
-        with salt.utils.fopen(path, 'rb') as fp_:
+        with salt.utils.files.fopen(path, 'rb') as fp_:
             return self.serial.loads(fp_.read())
 
     def write_local(self, priv, sign):
@@ -1397,7 +1414,7 @@ class RaetKey(Key):
         if os.path.exists(path):
             #mode = os.stat(path).st_mode
             os.chmod(path, stat.S_IWUSR | stat.S_IRUSR)
-        with salt.utils.fopen(path, 'w+') as fp_:
+        with salt.utils.files.fopen(path, 'w+') as fp_:
             fp_.write(self.serial.dumps(keydata))
             os.chmod(path, stat.S_IRUSR)
         os.umask(c_umask)

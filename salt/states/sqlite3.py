@@ -77,6 +77,19 @@ Here is an example of removing a row from a table:
         - where_sql: email="john.doe@companyabc.com"
         - require:
           - sqlite3: users
+
+Note that there is no explicit state to perform random queries, however, this
+can be approximated with sqlite3's module functions and module.run:
+
+  .. code-block:: yaml
+
+    zone-delete:
+      module.run:
+        - name: sqlite3.modify
+        - db: {{ db }}
+        - sql: "DELETE FROM records WHERE id > {{ count[0] }} AND domain_id = {{ domain_id }}"
+        - watch:
+          - sqlite3: zone-insert-12
 """
 
 # Import Python libs
@@ -394,7 +407,7 @@ def table_present(name, db, schema, force=False):
         if len(tables) == 1:
             sql = None
             if isinstance(schema, str):
-                sql = schema
+                sql = schema.strip()
             else:
                 sql = _get_sql_from_schema(name, schema)
 
