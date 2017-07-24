@@ -1094,6 +1094,8 @@ def sls(mods, test=None, exclude=None, queue=False, **kwargs):
 
     if isinstance(mods, six.string_types):
         mods = mods.split(',')
+    if isinstance(mods, six.integer_types):
+        mods = [str(mods)]
 
     st_.push_active()
     ret = {}
@@ -1425,6 +1427,8 @@ def sls_id(id_, mods, test=None, queue=False, **kwargs):
 
     if isinstance(mods, six.string_types):
         split_mods = mods.split(',')
+    if isinstance(mods, six.integer_types):
+        mods = [str(mods)]
     st_.push_active()
     try:
         high_, errors = st_.render_highstate({opts['environment']: split_mods})
@@ -1508,6 +1512,8 @@ def show_low_sls(mods, test=None, queue=False, **kwargs):
 
     if isinstance(mods, six.string_types):
         mods = mods.split(',')
+    if isinstance(mods, six.integer_types):
+        mods = [str(mods)]
     st_.push_active()
     try:
         high_, errors = st_.render_highstate({opts['environment']: mods})
@@ -1602,6 +1608,8 @@ def show_sls(mods, test=None, queue=False, **kwargs):
 
     if isinstance(mods, six.string_types):
         mods = mods.split(',')
+    if isinstance(mods, six.integer_types):
+        mods = [str(mods)]
     st_.push_active()
     try:
         high_, errors = st_.render_highstate({opts['environment']: mods})

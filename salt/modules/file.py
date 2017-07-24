@@ -2596,7 +2596,7 @@ def blockreplace(path,
             try:
                 fh_ = salt.utils.atomicfile.atomic_open(path, 'w')
                 for line in new_file:
-                    fh_.write(line)
+                    fh_.write(salt.utils.to_str(line))
             finally:
                 fh_.close()
 
@@ -3498,7 +3498,7 @@ def stats(path, hash_type=None, follow_symlinks=True):
     ret['mtime'] = pstat.st_mtime
     ret['ctime'] = pstat.st_ctime
     ret['size'] = pstat.st_size
-    ret['mode'] = str(oct(stat.S_IMODE(pstat.st_mode)))
+    ret['mode'] = format(stat.S_IMODE(pstat.st_mode), 'o')
     if hash_type:
         ret['sum'] = get_hash(path, hash_type)
     ret['type'] = 'file'
@@ -5248,7 +5248,7 @@ def manage_file(name,
             mask = os.umask(0)
             os.umask(mask)
             # Calculate the mode value that results from the umask
-            mode = oct((0o777 ^ mask) & 0o666)
+            mode = format((0o777 ^ mask) & 0o666, 'o')
 
         if salt.utils.is_windows():
             ret = check_perms(name,

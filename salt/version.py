@@ -513,8 +513,8 @@ def __discover_version(saltstack_version):
             process = subprocess.Popen(
                 ['git', 'describe', '--tags', '--match', 'v[0-9]*', '--always'], **kwargs)
             out, err = process.communicate()
-        out = out.strip()
-        err = err.strip()
+        out = out.decode("utf-8", "ignore").strip()
+        err = err.decode("utf-8", "ignore").strip()
 
         if not out or err:
             return saltstack_version

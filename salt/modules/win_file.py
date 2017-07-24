@@ -840,7 +840,7 @@ def stats(path, hash_type='sha256', follow_symlinks=True):
     ret['mtime'] = pstat.st_mtime
     ret['ctime'] = pstat.st_ctime
     ret['size'] = pstat.st_size
-    ret['mode'] = str(oct(stat.S_IMODE(pstat.st_mode)))
+    ret['mode'] = format(stat.S_IMODE(pstat.st_mode), 'o')
     if hash_type:
         ret['sum'] = get_sum(path, hash_type)
     ret['type'] = 'file'

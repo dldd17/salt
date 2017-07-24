@@ -613,7 +613,10 @@ class SSH(object):
             if isinstance(jid, bytes):
                 jid = jid.decode('utf-8')
             if self.opts['master_job_cache'] == 'local_cache':
-                self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load, minions=self.targets.keys())
+                if six.PY2:
+                    self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load, minions=self.targets.keys())
+                else:
+                    self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load, minions=list(self.targets.keys()))
             else:
                 self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load)
         except Exception as exc:

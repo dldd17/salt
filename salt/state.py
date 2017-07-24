@@ -1475,7 +1475,7 @@ class State(object):
             if not isinstance(body, dict):
                 continue
             for state, run in six.iteritems(body):
-                if state.startswith('__'):
+                if state.startswith('__') or not run:
                     continue
                 for arg in run:
                     if isinstance(arg, dict):
