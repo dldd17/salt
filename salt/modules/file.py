@@ -515,6 +515,9 @@ def _cmp_attrs(path, attrs):
     attrs
         string of attributes to compare against a given file
     '''
+    if attrs is None:
+        attrs = []
+
     diff = [None, None]
 
     lattrs = lsattr(path).get(path, '')
